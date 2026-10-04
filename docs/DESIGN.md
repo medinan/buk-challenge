@@ -78,7 +78,7 @@ El modelo separa la **definición** de una notificación de cada **envío concre
 | Capacidad | Qué debe lograr el sistema |
 | --- | --- |
 | **Definición de notificaciones** | Permitir definir una notificación una sola vez y reutilizarla en distintos envíos. |
-| **Solicitud de envío** | Recibir solicitudes de notificación mediante un endpoint que identifique al usuario destinatario. |
+| **Solicitud de envío** | Recibir solicitudes de notificación mediante la librería, identificando al usuario destinatario. |
 | **Autenticación** | Identificar al consumidor que solicita un envío. |
 | **Autorización** | Comprobar que ese consumidor tiene permiso para solicitarlo. |
 | **Validación del destinatario** | Comprobar que el contacto tiene una dirección válida para el canal seleccionado. |
@@ -91,7 +91,7 @@ El modelo separa la **definición** de una notificación de cada **envío concre
 | **Validación de contenido** | Evitar el envío de mensajes con plantillas ausentes o variables sin completar. |
 | **Preparación y envío** | Preparar el mensaje y entregarlo al proveedor del canal; en esta etapa, enviar correos electrónicos. |
 | **Independencia del proveedor** | Permitir cambiar el proveedor de email sin modificar definiciones, plantillas ni estados de las notificaciones. |
-| **Rate limit de la API** | Limitar globalmente las solicitudes al endpoint para contener abusos de la API. |
+| **Rate limit** | Limitar globalmente las solicitudes a los endpoints de administración para contener abusos. |
 | **Idempotencia** | Evitar que solicitudes del mismo hecho de negocio creen despachos repetidos. |
 | **Deduplicación de notificaciones** | Detectar mensajes idénticos que la idempotencia no haya reconocido y registrar su cancelación sin enviarlos. |
 | **Recuperación de despachos** | Reanudar envíos inconclusos tras fallos recuperables o caídas de una máquina. |
@@ -100,7 +100,7 @@ El modelo separa la **definición** de una notificación de cada **envío concre
 | **Seguimiento y auditoría** | Consultar por API los despachos y sus eventos para conocer a quién se intentó notificar, cuándo, por qué canal y con qué resultado, sin editarlos ni eliminarlos. |
 | **Observabilidad** | Detectar acumulación de despachos, demoras y fallos mediante métricas y alertas. |
 
-**Diferencia con el enunciado:** elegí un endpoint para centralizar autenticación y rate limit. Esta decisión reemplaza la invocación directa `FooNotification.send(email)` solicitada en la API de envío 1.2; la API de definición mediante clases se mantiene.
+**Nota sobre el enunciado:** la API de envío se mantiene como invocación directa a la librería (`FooNotification.send(...)`), como pide el enunciado. Los endpoints HTTP se reservan para administración y auditoría.
 
 ### 📋 Reglas de negocio
 
@@ -108,9 +108,8 @@ Estas reglas determinan **cuándo se acepta una solicitud**, **qué mensaje se e
 
 #### 🔐 Acceso a la central
 
-- La solicitud debe tener una **API key válida** y el consumidor debe contar con permiso para pedir esa notificación; de lo contrario, no se crea un despacho.
-- El rate limit se aplica **globalmente al endpoint**, sin separar cupos por API key. Una solicitud que supera el límite recibe `429` y no crea un despacho.
-- Toda solicitud, incluida una notificación `critical`, debe incluir el `user_id` del destinatario. Lo proporciona quien invoca el endpoint; la central no lo deduce de la dirección de email.
+- La invocación a la librería es **directa desde los módulos**; no requiere API key. La autenticación, la autorización y el rate limit aplican a los **endpoints de administración**, no al envío.
+- Toda solicitud, incluida una notificación `critical`, debe incluir el `user_id` del destinatario. Lo proporciona quien invoca la librería; la central no lo deduce de la dirección de email.
 
 #### 📬 Destinatario, canal y contenido
 
@@ -128,7 +127,7 @@ Estas reglas determinan **cuándo se acepta una solicitud**, **qué mensaje se e
 - El día y la ventana se calculan usando la **zona horaria configurada para el país** del destinatario. La solicitud y el perfil no aportan una zona horaria que reemplace esa configuración.
 - Una notificación `normal` fuera de horario permanece en `pending` hasta la próxima ventana. Si se agotó el cupo total o el de categoría/canal, permanece en `pending` hasta que vuelva a haber cupo. No se descarta ni se agrupa por estas causas.
 - Ambos cupos se comprueban para `normal` y se reservan de forma coordinada entre máquinas **justo antes de intentar el envío**. Un despacho pospuesto no ocupa cupo mientras espera.
-- Una notificación `critical` **no espera por la ventana ni por los cupos y no los consume**. Mantiene las demás validaciones de destinatario, canal y contenido. El rate limit global del endpoint es un control distinto de estos cupos por usuario.
+- Una notificación `critical` **no espera por la ventana ni por los cupos y no los consume**. Mantiene las demás validaciones de destinatario, canal y contenido. El rate limit de los endpoints de administración es un control distinto de estos cupos por usuario.
 
 #### ⚡ Prioridad y prevención de duplicados
 
@@ -139,13 +138,13 @@ Estas reglas determinan **cuándo se acepta una solicitud**, **qué mensaje se e
 #### 🧾 Resultado e historial
 
 - Un despacho empieza en `pending`. Los errores recuperables del envío permiten nuevos intentos; `preparation_failed`, `accepted_by_provider`, `failed` y `cancelled_as_duplicate` son resultados terminales en esta etapa.
-- Los rechazos por API key, falta de permiso o rate limit ocurren **antes** de crear un despacho; no se registran como `preparation_failed`.
+- Los rechazos por autenticación, autorización o rate limit en los endpoints de administración ocurren **antes** de crear un despacho; no se registran como `preparation_failed`.
 - **Aceptado por el proveedor no significa entregado al destinatario**: para email solo se afirma que el proveedor elegido aceptó el mensaje para procesarlo.
 - Los eventos del despacho son inmutables y conservan cuándo ocurrió cada hecho, por qué canal —si llegó a determinarse— y quién o qué inició la solicitud.
 
 ### Entidades del modelo y su propósito
 
-El enunciado pide dos API: una para **definir** una notificación y otra para **enviarla**. Este diseño mantiene la primera y utiliza un endpoint para la segunda. Propongo siete entidades internas para identificar qué se envía, por qué canal y país, a quién, bajo qué política de horario y cupos, y qué pasó después. Las citas muestran qué pide el caso; debajo de cada una explico qué aporta el modelo y qué queda fuera.
+El enunciado pide dos API: una para **definir** una notificación y otra para **enviarla**. Este diseño mantiene ambas como invocación a la librería. Propongo siete entidades internas para identificar qué se envía, por qué canal y país, a quién, bajo qué política de horario y cupos, y qué pasó después. Las citas muestran qué pide el caso; debajo de cada una explico qué aporta el modelo y qué queda fuera.
 
 #### `NotificationDefinition` — definir una sola vez
 
@@ -219,7 +218,7 @@ Para una notificación dirigida a Chile, si el contexto indica `name: Ana` y `da
 > “Disponibilizar solo correo electrónico como canal de comunicación.”  
 > “Además, una misma notificación puede enviarse a todos los canales disponibles si el desarrollador olvida aplicar un filtro manual en su implementación.”
 
-**Por qué elegí este modelo:** decidí representar el medio concreto al que se dirige el envío mediante `Contact`: en la parte 1, una dirección de email. Guarda tipo, valor y país, cuando se conoce por el perfil/contacto, para registrar a quién se intenta contactar y seleccionar la plantilla apropiada. El endpoint puede indicar el país en la solicitud; si no lo indica, la central consulta el dato asociado al destinatario. Incluí verificación, preferencia y vínculo con un usuario como atributos del modelo: **el email por sí solo no identifica necesariamente a un usuario ni su país**. La validación de canales corresponde al caso de uso, no a esta entidad.
+**Por qué elegí este modelo:** decidí representar el medio concreto al que se dirige el envío mediante `Contact`: en la parte 1, una dirección de email. Guarda tipo, valor y país, cuando se conoce por el perfil/contacto, para registrar a quién se intenta contactar y seleccionar la plantilla apropiada. La solicitud puede indicar el país; si no lo indica, la central consulta el dato asociado al destinatario. Incluí verificación, preferencia y vínculo con un usuario como atributos del modelo: **el email por sí solo no identifica necesariamente a un usuario ni su país**. La validación de canales corresponde al caso de uso, no a esta entidad.
 
 | Campo (tipo) | Finalidad | Valores posibles / ejemplo |
 | --- | --- | --- |
@@ -432,7 +431,7 @@ Se registra en `NotificationEvent` para identificar **quién o qué inició** la
 | --- | --- | --- |
 | `user` | Identificar una acción iniciada por una persona usuaria. | Ayuda a rastrear quién inició la solicitud. |
 | `service` | Identificar una solicitud originada por un servicio. | Permite ubicar el componente que solicitó el envío. |
-| `api_key` | Identificar una solicitud mediante una clave de API. | Permite rastrear la credencial utilizada para invocar el endpoint. |
+| `api_key` | Identificar una solicitud mediante una clave de API. | Permite rastrear la credencial utilizada para invocar un endpoint de administración. |
 | `system` | Identificar una acción automática del sistema. | Permite distinguir envíos automáticos de solicitudes iniciadas por otros orígenes. |
 
 ##### 🧾 Hecho registrado · `EventType`
@@ -483,7 +482,10 @@ flowchart TB
                 M["Dominio · modelos + ORM<br/>NotificationDispatch, Contact"]
                 P["Puertos/adaptadores<br/>NotificationChannel, EmailProvider"]
             end
+            CR["Cronjob<br/>selecciona pendientes en ventana/cupo"]
+            W["Workers<br/>envían despachos en background"]
         end
+        Q[("Cola de trabajos<br/>Redis/SQS")]
         DB[(PostgreSQL)]
     end
 
@@ -494,7 +496,12 @@ flowchart TB
     T3 --> C
     C --> S
     S --> M
-    S --> P
+    S --> Q
+    CR --> M
+    CR --> Q
+    Q --> W
+    W --> M
+    W --> P
     M --> DB
     P --> SG
 ```
@@ -502,11 +509,14 @@ flowchart TB
 | Elemento | Dónde corre |
 | --- | --- |
 | Monolito (4 capas) | AWS EC2 (cluster) |
+| Cronjob | AWS EC2 (background) |
+| Workers | AWS EC2 (background) |
+| Cola de trabajos | AWS (Redis/SQS) |
 | PostgreSQL | AWS (base de datos) |
 | SendGrid | SaaS externo, fuera de AWS |
 | Equipos | Invocan desde sus módulos |
 
-**Cómo se lee:** los equipos invocan la central desde sus módulos. El monolito corre en un cluster EC2 y contiene las cuatro capas: la solicitud entra por los controllers (presentación), delega en los servicios (aplicación), que persisten en los modelos (dominio, vía ORM hacia PostgreSQL) y envían por los puertos (canales/proveedores hacia SendGrid). PostgreSQL queda dentro de AWS; SendGrid es un SaaS externo.
+**Cómo se lee:** los equipos invocan la central desde sus módulos. El monolito corre en un cluster EC2 y contiene las cuatro capas: la solicitud entra por los controllers (presentación), delega en los servicios (aplicación), que persisten el despacho en los modelos (dominio, vía ORM hacia PostgreSQL). Las notificaciones `critical` se encolan directo; las `normal` las selecciona el **cronjob** (que lee los modelos y verifica ventana/cupo) y las encola. Los workers consumen la cola, reclaman el despacho y envían por los puertos (canales/proveedores hacia SendGrid). PostgreSQL y la cola quedan dentro de AWS; SendGrid es un SaaS externo.
 
 ## 📦 Diseño de la librería
 
@@ -634,7 +644,7 @@ classDiagram
 | --- | --- |
 | `RequestDispatch` | Recibe la solicitud y crea el despacho en `pending`. |
 | `PrepareDispatch` | Resuelve contacto, país, plantilla y contexto; valida contenido. |
-| `ProcessDispatch` | Worker: reclama, verifica ventana/cupos, envía por el canal. |
+| `ProcessDispatch` | Worker: reclama y envía por el canal (el cronjob ya verificó ventana/cupo). |
 | `RetryDispatch` | Programa y ejecuta reintentos tras fallos recuperables. |
 
 ```mermaid
@@ -667,9 +677,11 @@ classDiagram
 
     note for RequestDispatch "Crea el despacho en pending;<br/>no envía todavía"
     note for PrepareDispatch "Si falta un dato, marca<br/>preparation_failed sin llamar al proveedor"
-    note for ProcessDispatch "Worker: reclama con lease,<br/>verifica ventana y cupos antes de enviar"
+    note for ProcessDispatch "Worker: reclama con lease<br/>y envía (el cronjob ya verificó ventana/cupo)"
     note for RetryDispatch "Espera incremental con<br/>máximo de intentos"
 ```
+
+**Síncrono vs. worker:** `RequestDispatch` y `PrepareDispatch` se invocan síncronamente desde el servicio. `ProcessDispatch` y `RetryDispatch` son **tareas de worker**: no se llaman directamente, sino que las ejecuta un worker en background (ver [Workers, cronjob y cola de trabajos](#-workers-cronjob-y-cola-de-trabajos)).
 
 #### 🔍 Consulta y auditoría
 
@@ -716,6 +728,8 @@ classDiagram
 
     note for RecoverDispatches "Recupera despachos con lease vencido<br/>tras una caída de la máquina"
 ```
+
+**Tarea periódica:** `RecoverDispatches` no es un caso de uso síncrono: es una **tarea periódica de worker** que recupera despachos huérfanos (ver [Workers, cronjob y cola de trabajos](#-workers-cronjob-y-cola-de-trabajos)).
 
 **Preocupaciones transversales:** `Autenticación`, `Autorización` y `Rate limit` **no son responsabilidad de los casos de uso**. Se resuelven en la capa de presentación (controllers o middleware) **antes** de invocar el servicio. El caso de uso asume que quien lo llama ya fue autenticado, autorizado y no superó el límite.
 
@@ -827,3 +841,99 @@ flowchart TB
 ```
 
 **Cómo se lee:** añadir un canal (WhatsApp, Slack) es implementar `NotificationChannel`; añadir un proveedor (Mailgun, SES) es implementar `EmailProvider`. En ningún caso se toca `NotificationDefinition` ni el servicio. Las flechas sólidas marcan lo implementado hoy; las punteadas, lo que se puede añadir después.
+
+## ⚙️ Workers, cronjob y cola de trabajos
+
+El envío no ocurre en la misma petición. Según la prioridad, el despacho toma uno de dos caminos: **`critical`** va directo a la cola; **`normal`** se registra en la base de datos y un **cronjob** lo selecciona cuando cumple ventana y cupo.
+
+### Componentes
+
+| Componente | Rol | Ejemplo |
+| --- | --- | --- |
+| **Cola de trabajos** | Guarda las tareas pendientes y las entrega a los workers. | Redis, SQS, RabbitMQ |
+| **Cronjob** | Proceso periódico que selecciona despachos `normal` listos para enviar. | Cron, Sidekiq Scheduler |
+| **Workers** | Procesos en background que ejecutan las tareas de envío. | Celery, Sidekiq |
+| **Tareas** | Unidades de trabajo encoladas. | `process_dispatch`, `retry_dispatch` |
+
+### Dos caminos según la prioridad
+
+```mermaid
+flowchart TB
+    A["DispatchService<br/>crea el despacho"] --> B{"¿Priority?"}
+
+    B -->|"critical"| C["Encolar directo<br/>sin ventana ni cupo"]
+    B -->|"normal"| D["Persistir en pending<br/>con next_attempt_at"]
+
+    C --> E["Cola de trabajos"]
+    D --> F["Cronjob<br/>escanea pendientes"]
+
+    F --> G{"¿next_attempt_at ≤ ahora<br/>y dentro de ventana<br/>y hay cupo?"}
+    G -->|"no"| H["Sigue en pending<br/>(próxima pasada)"]
+    G -->|"sí"| I["Reserva cupo<br/>y encola"]
+
+    I --> E
+    E --> J["Worker<br/>envía por el canal"]
+    J --> K["SendGrid"]
+```
+
+**Cómo se lee:** una notificación `critical` se encola de inmediato y el worker la envía sin esperar ventana ni cupo. Una `normal` queda en `pending`; el cronjob la revisa periódicamente y solo la encola cuando llegó su `next_attempt_at`, está dentro de la ventana y hay cupo disponible. Al encolar, reserva el cupo para no saturar al usuario.
+
+### Flujo de un despacho normal
+
+```mermaid
+sequenceDiagram
+    participant S as DispatchService
+    participant DB as PostgreSQL
+    participant CR as Cronjob
+    participant Q as Cola de trabajos
+    participant W as Worker
+    participant P as SendGrid
+
+    S->>DB: crea dispatch en pending (next_attempt_at)
+    CR->>DB: escanea pending con next_attempt_at ≤ ahora
+    CR->>CR: verifica ventana y cupos
+
+    alt fuera de ventana o sin cupo
+        CR-->>DB: deja en pending (próxima pasada)
+    else listo para enviar
+        CR->>DB: reserva cupo
+        CR->>Q: encola process_dispatch
+        Q->>W: entrega tarea
+        W->>DB: reclama dispatch (dispatching + lease)
+        W->>P: envía email
+        P-->>W: aceptado (202)
+        W->>DB: actualiza accepted_by_provider
+    end
+```
+
+### Reintentos y recuperación
+
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant Q as Cola de trabajos
+    participant DB as PostgreSQL
+    participant P as SendGrid
+
+    W->>P: envía email
+    P-->>W: error recuperable (timeout)
+
+    alt error recuperable
+        W->>DB: registra retry_scheduled
+        W->>Q: encola retry_dispatch (backoff exponencial)
+    else error definitivo
+        W->>DB: actualiza failed
+    end
+```
+
+### Mapeo con el diseño
+
+| Concepto del diseño | Mecanismo |
+| --- | --- |
+| `next_attempt_at` | El cronjob solo encola cuando llegó esa fecha |
+| Ventanas y cupos | El cronjob los verifica antes de encolar |
+| `lease_expires_at` | `acks_late` (confirmar tras completar) |
+| Reintentos | backoff exponencial con máximo de intentos |
+| Recuperación tras caída | `RecoverDispatches` (tarea periódica) re-encola huérfanos |
+
+**Cómo se lee:** el cronjob es el "scheduler" de las notificaciones `normal`: decide qué se puede enviar según ventana y cupo, y encola solo lo que corresponde. El worker solo envía. Las `critical` no pasan por el cronjob. La cola garantiza *al menos una vez*: si un worker cae, la tarea no confirmada se re-entrega a otro; `RecoverDispatches` recupera los despachos con lease vencido.
